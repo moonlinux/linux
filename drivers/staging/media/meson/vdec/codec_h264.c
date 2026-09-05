@@ -205,6 +205,9 @@ static int codec_h264_stop(struct amvdec_session *sess)
 	struct codec_h264 *h264 = sess->priv;
 	struct amvdec_core *core = sess->core;
 
+	if (!h264)
+		return 0;
+
 	if (h264->ext_fw_vaddr)
 		dma_free_coherent(core->dev, SIZE_EXT_FW,
 				  h264->ext_fw_vaddr, h264->ext_fw_paddr);
@@ -220,6 +223,9 @@ static int codec_h264_stop(struct amvdec_session *sess)
 	if (h264->sei_vaddr)
 		dma_free_coherent(core->dev, SIZE_SEI,
 				  h264->sei_vaddr, h264->sei_paddr);
+
+	kfree(h264);
+	sess->priv = NULL;
 
 	return 0;
 }
