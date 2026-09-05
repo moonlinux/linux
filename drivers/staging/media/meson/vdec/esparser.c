@@ -580,7 +580,7 @@ void esparser_queue_all_src(struct work_struct *work)
 	struct amvdec_core *core = sess->core;
 	struct device *dev = core->dev_dec;
 
-	while (!sess->should_stop) {
+	while (!READ_ONCE(sess->should_stop)) {
 		struct vb2_v4l2_buffer *vbuf;
 		bool is_last_buf;
 		int ret;

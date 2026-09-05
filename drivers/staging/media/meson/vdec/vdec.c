@@ -127,7 +127,7 @@ static void vdec_poweroff(struct amvdec_session *sess)
 	struct amvdec_ops *vdec_ops = sess->fmt_out->vdec_ops;
 	struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
 
-	sess->should_stop = 1;
+	WRITE_ONCE(sess->should_stop, 1);
 	vdec_wait_inactive(sess);
 	esparser_power_down(sess);
 	if (codec_ops->drain)
@@ -336,7 +336,8 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 	}
 
 	sess->status = STATUS_INIT;
-	core->cur_sess = sess;
+	/* Publish the session before enabling hardware access. */
+	smp_store_release(&core->cur_sess, sess);
 	mutex_unlock(&core->lock);
 
 	sess->vififo_size = SIZE_VIFIFO;
@@ -398,7 +399,8 @@ err_free_vififo:
 err_cleanup_hardware_claim:
 	mutex_lock(&core->lock);
 	if (core->cur_sess == sess)
-		core->cur_sess = NULL;
+		/* Release ownership of the hardware. */
+		smp_store_release(&core->cur_sess, NULL);
 	if (sess->status != STATUS_NEEDS_RESUME)
 		sess->status = STATUS_STOPPED;
 	mutex_unlock(&core->lock);
@@ -462,6 +464,9 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 	enum amvdec_status old_status;
 	bool full_cleanup = false;
 	bool is_owner = false;
+
+	/* Request the parser work to stop before tearing down the session. */
+	WRITE_ONCE(sess->should_stop, 1);
 
 	/* Hold core lock to evaluate state mutations and isolate hardware safely */
 	mutex_lock(&core->lock);
@@ -848,7 +853,7 @@ vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
 
 	if (cmd->cmd == V4L2_DEC_CMD_START) {
 		v4l2_m2m_clear_state(sess->m2m_ctx);
-		sess->should_stop = 0;
+		WRITE_ONCE(sess->should_stop, 0);
 		return 0;
 	}
 
@@ -858,7 +863,7 @@ vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
 
 	dev_dbg(dev, "Received V4L2_DEC_CMD_STOP\n");
 
-	sess->should_stop = 1;
+	WRITE_ONCE(sess->should_stop, 1);
 
 	v4l2_m2m_mark_stopped(sess->m2m_ctx);
 
@@ -1045,6 +1050,8 @@ static int vdec_close(struct file *file)
 	struct amvdec_session *sess = file_to_amvdec_session(file);
 	struct amvdec_core *core = sess->core;
 	bool is_owner = false;
+
+	WRITE_ONCE(sess->should_stop, 1);
 
 	if (!IS_ERR_OR_NULL(sess->recycle_thread)) {
 		kthread_stop(sess->recycle_thread);
