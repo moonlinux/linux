@@ -110,10 +110,16 @@ disable_dos_parser:
 
 static void vdec_wait_inactive(struct amvdec_session *sess)
 {
-	/* We consider 50ms with no IRQ to be inactive. */
-	while (time_is_after_jiffies64(sess->last_irq_jiffies +
-				       msecs_to_jiffies(50)))
-		msleep(25);
+	unsigned long timeout = msecs_to_jiffies(50);
+
+	while (!time_after_eq64(get_jiffies_64(),
+				READ_ONCE(sess->last_irq_jiffies) + timeout)) {
+		wait_event_timeout(sess->inactive_wq,
+				   time_after_eq64(get_jiffies_64(),
+						   READ_ONCE(sess->last_irq_jiffies) +
+						   timeout),
+				   timeout);
+	}
 }
 
 static void vdec_poweroff(struct amvdec_session *sess)
@@ -1017,6 +1023,7 @@ static int vdec_open(struct file *file)
 	mutex_init(&sess->lock);
 	mutex_init(&sess->bufs_recycle_lock);
 	spin_lock_init(&sess->ts_spinlock);
+	init_waitqueue_head(&sess->inactive_wq);
 
 	v4l2_fh_init(&sess->fh, core->vdev_dec);
 	sess->fh.ctrl_handler = &sess->ctrl_handler;
@@ -1122,7 +1129,7 @@ static irqreturn_t vdec_isr(int irq, void *data)
 	if (!sess)
 		return IRQ_NONE;
 
-	sess->last_irq_jiffies = get_jiffies_64();
+	WRITE_ONCE(sess->last_irq_jiffies, jiffies);
 
 	return sess->fmt_out->codec_ops->isr(sess);
 }
@@ -1136,6 +1143,8 @@ static irqreturn_t vdec_threaded_isr(int irq, void *data)
 	sess = smp_load_acquire(&core->cur_sess);
 	if (!sess)
 		return IRQ_NONE;
+
+	wake_up_interruptible(&sess->inactive_wq);
 
 	return sess->fmt_out->codec_ops->threaded_isr(sess);
 }
