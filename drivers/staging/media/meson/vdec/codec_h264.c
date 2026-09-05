@@ -293,6 +293,7 @@ static void codec_h264_resume(struct amvdec_session *sess)
 	struct amvdec_core *core = sess->core;
 	struct codec_h264 *h264 = sess->priv;
 	u32 mb_width, mb_height, mb_total;
+	size_t ref_size;
 
 	amvdec_set_canvases(sess,
 			    (u32[]){ ANC0_CANVAS_ADDR, 0 },
@@ -304,9 +305,25 @@ static void codec_h264_resume(struct amvdec_session *sess)
 	/* Align to a multiple of 4 macroblocks */
 	mb_width = ALIGN(h264->mb_width, 4);
 	mb_height = ALIGN(h264->mb_height, 4);
-	mb_total = mb_width * mb_height;
 
-	h264->ref_size = mb_total * MB_MV_SIZE * h264->max_refs;
+	if (!mb_width || !mb_height || !h264->max_refs) {
+		dev_err(core->dev,
+			"invalid H.264 parameters: %ux%u, max_refs=%u\n",
+			h264->mb_width, h264->mb_height, h264->max_refs);
+		amvdec_abort(sess);
+		return;
+	}
+
+	mb_total = mb_width * mb_height;
+	ref_size = (size_t)mb_total * MB_MV_SIZE * h264->max_refs;
+
+	if (ref_size > SIZE_MAX) {
+		dev_err(core->dev, "H.264 reference buffer size overflow\n");
+		amvdec_abort(sess);
+		return;
+	}
+
+	h264->ref_size = ref_size;
 	h264->ref_vaddr = dma_alloc_coherent(core->dev, h264->ref_size,
 					     &h264->ref_paddr, GFP_KERNEL);
 	if (!h264->ref_vaddr) {
@@ -316,12 +333,12 @@ static void codec_h264_resume(struct amvdec_session *sess)
 
 	/* Address to store the references' MVs */
 	amvdec_write_dos(core, AV_SCRATCH_1, h264->ref_paddr);
-	/* End of ref MV */
+	/* End of reference MVs. */
 	amvdec_write_dos(core, AV_SCRATCH_4, h264->ref_paddr + h264->ref_size);
 
 	amvdec_write_dos(core, AV_SCRATCH_0, (h264->max_refs << 24) |
-					     (sess->num_dst_bufs << 16) |
-					     ((h264->max_refs - 1) << 8));
+			 (sess->num_dst_bufs << 16) |
+			 ((h264->max_refs - 1) << 8));
 }
 
 /*
