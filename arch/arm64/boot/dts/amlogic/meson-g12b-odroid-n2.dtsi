@@ -282,6 +282,10 @@
 	linux,rc-map-name = "rc-odroid";
 };
 
+&mali {
+	mali-supply = <&vddgpu>;
+};
+
 /*
  * EMMC_D4, EMMC_D5, EMMC_D6 and EMMC_D7 pins are shared between SPI NOR pins
  * and eMMC Data 4 to 7 pins.
