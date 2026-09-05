@@ -483,9 +483,6 @@ int esparser_power_up(struct amvdec_session *sess)
 			    (16 << PS_CFG_MAX_FETCH_CYCLE_BIT) |
 			    (2  << PS_CFG_STARTCODE_WID_24_BIT));
 
-	amvdec_write_parser(core, PARSER_CONTROL,
-			    (ES_SEARCH | ES_PARSER_START));
-
 	amvdec_write_parser(core, PARSER_VIDEO_START_PTR, sess->vififo_paddr);
 	amvdec_write_parser(core, PARSER_VIDEO_END_PTR,
 			    sess->vififo_paddr + sess->vififo_size - 8);
@@ -495,9 +492,14 @@ int esparser_power_up(struct amvdec_session *sess)
 	if (vdec_ops->conf_esparser)
 		vdec_ops->conf_esparser(sess);
 
+	/* Clear pending parser interrupts before enabling them. */
 	amvdec_write_parser(core, PARSER_INT_STATUS, 0xffff);
 	amvdec_write_parser(core, PARSER_INT_ENABLE,
 			    BIT(PARSER_INT_HOST_EN_BIT));
+
+	/* Start parser after the complete configuration is in place. */
+	amvdec_write_parser(core, PARSER_CONTROL,
+			    ES_SEARCH | ES_PARSER_START);
 
 	return 0;
 }
