@@ -17,8 +17,11 @@
 /* AO Registers */
 #define AO_RTI_GEN_PWR_SLEEP0	0xe8
 #define AO_RTI_GEN_PWR_ISO0	0xec
-	#define GEN_PWR_VDEC_1 (BIT(3) | BIT(2))
-	#define GEN_PWR_VDEC_1_SM1 (BIT(1))
+	#define GEN_PWR_ISO_VDEC_1     (BIT(7) | BIT(6))
+	#define GEN_PWR_ISO_VDEC_1_SM1 BIT(1)
+
+#define GEN_PWR_VDEC_1         (BIT(3) | BIT(2))
+#define GEN_PWR_VDEC_1_SM1     BIT(1)
 
 #define MC_SIZE			(4096 * 4)
 
@@ -146,6 +149,16 @@ static void __vdec_1_stop(struct amvdec_session *sess)
 {
 	struct amvdec_core *core = sess->core;
 	struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
+	u32 pwr_mask;
+	u32 iso_mask;
+
+	if (core->platform->revision == VDEC_REVISION_SM1) {
+		pwr_mask = GEN_PWR_VDEC_1_SM1;
+		iso_mask = GEN_PWR_ISO_VDEC_1_SM1;
+	} else {
+		pwr_mask = GEN_PWR_VDEC_1;
+		iso_mask = GEN_PWR_ISO_VDEC_1;
+	}
 
 	amvdec_write_dos(core, MPSR, 0);
 	amvdec_write_dos(core, CPSR, 0);
@@ -155,21 +168,18 @@ static void __vdec_1_stop(struct amvdec_session *sess)
 	amvdec_write_dos(core, DOS_SW_RESET0, 0);
 	amvdec_read_dos(core, DOS_SW_RESET0);
 
-	/* enable vdec1 isolation */
-	if (core->platform->revision == VDEC_REVISION_SM1)
-		regmap_update_bits(core->regmap_ao, AO_RTI_GEN_PWR_ISO0,
-				   GEN_PWR_VDEC_1_SM1, GEN_PWR_VDEC_1_SM1);
-	else
-		regmap_write(core->regmap_ao, AO_RTI_GEN_PWR_ISO0, 0xc0);
-	/* power off vdec1 memories */
+	/* Isolate VDEC1 before powering it down. */
+	regmap_update_bits(core->regmap_ao,
+			   AO_RTI_GEN_PWR_ISO0,
+			   iso_mask, iso_mask);
+
+	/* Power off VDEC1 memories. */
 	amvdec_write_dos(core, DOS_MEM_PD_VDEC, 0xffffffff);
-	/* power off vdec1 */
-	if (core->platform->revision == VDEC_REVISION_SM1)
-		regmap_update_bits(core->regmap_ao, AO_RTI_GEN_PWR_SLEEP0,
-				   GEN_PWR_VDEC_1_SM1, GEN_PWR_VDEC_1_SM1);
-	else
-		regmap_update_bits(core->regmap_ao, AO_RTI_GEN_PWR_SLEEP0,
-				   GEN_PWR_VDEC_1, GEN_PWR_VDEC_1);
+
+	/* Power down VDEC1. */
+	regmap_update_bits(core->regmap_ao,
+			   AO_RTI_GEN_PWR_SLEEP0,
+			   pwr_mask, 0);
 
 	if (sess->priv)
 		codec_ops->stop(sess);
@@ -191,6 +201,16 @@ static int vdec_1_start(struct amvdec_session *sess)
 	int ret;
 	struct amvdec_core *core = sess->core;
 	struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
+	u32 pwr_mask;
+	u32 iso_mask;
+
+	if (core->platform->revision == VDEC_REVISION_SM1) {
+		pwr_mask = GEN_PWR_VDEC_1_SM1;
+		iso_mask = GEN_PWR_ISO_VDEC_1_SM1;
+	} else {
+		pwr_mask = GEN_PWR_VDEC_1;
+		iso_mask = GEN_PWR_ISO_VDEC_1;
+	}
 
 	/* Configure the vdec clk to the maximum available */
 	clk_set_rate(core->vdec_1_clk, 666666666);
@@ -199,12 +219,10 @@ static int vdec_1_start(struct amvdec_session *sess)
 		return ret;
 
 	/* Enable power for VDEC_1 */
-	if (core->platform->revision == VDEC_REVISION_SM1)
-		regmap_update_bits(core->regmap_ao, AO_RTI_GEN_PWR_SLEEP0,
-				   GEN_PWR_VDEC_1_SM1, 0);
-	else
-		regmap_update_bits(core->regmap_ao, AO_RTI_GEN_PWR_SLEEP0,
-				   GEN_PWR_VDEC_1, 0);
+	regmap_update_bits(core->regmap_ao,
+			   AO_RTI_GEN_PWR_SLEEP0,
+			   pwr_mask, 0);
+
 	usleep_range(10, 20);
 
 	/* Reset VDEC1 */
@@ -216,11 +234,10 @@ static int vdec_1_start(struct amvdec_session *sess)
 	/* enable VDEC Memories */
 	amvdec_write_dos(core, DOS_MEM_PD_VDEC, 0);
 	/* Remove VDEC1 Isolation */
-	if (core->platform->revision == VDEC_REVISION_SM1)
-		regmap_update_bits(core->regmap_ao, AO_RTI_GEN_PWR_ISO0,
-				   GEN_PWR_VDEC_1_SM1, 0);
-	else
-		regmap_write(core->regmap_ao, AO_RTI_GEN_PWR_ISO0, 0);
+	regmap_update_bits(core->regmap_ao,
+			   AO_RTI_GEN_PWR_ISO0,
+			   iso_mask, 0);
+
 	/* Reset DOS top registers */
 	amvdec_write_dos(core, DOS_VDEC_MCRCC_STALL_CTRL, 0);
 
