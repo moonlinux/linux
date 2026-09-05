@@ -438,10 +438,12 @@ static void vdec_reset_bufs_recycle(struct amvdec_session *sess)
 {
 	struct amvdec_buffer *tmp, *n;
 
+	mutex_lock(&sess->bufs_recycle_lock);
 	list_for_each_entry_safe(tmp, n, &sess->bufs_recycle, list) {
 		list_del(&tmp->list);
 		kfree(tmp);
 	}
+	mutex_unlock(&sess->bufs_recycle_lock);
 }
 
 static void vdec_stop_streaming(struct vb2_queue *q)
