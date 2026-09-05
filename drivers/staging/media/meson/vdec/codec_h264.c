@@ -4,6 +4,7 @@
  * Author: Maxime Jourdan <mjourdan@baylibre.com>
  */
 
+#include <linux/bits.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-contig.h>
 
@@ -407,14 +408,16 @@ static void codec_h264_src_change(struct amvdec_session *sess)
  */
 static u32 get_offset_msb(struct amvdec_core *core, int frame_num)
 {
-	int take_msb = frame_num % 2;
-	int reg_offset = (frame_num / 2) * 4;
-	u32 offset_msb = amvdec_read_dos(core, AV_SCRATCH_A + reg_offset);
+	u32 reg_offset = (frame_num / 2) * 4;
+	u32 offset_msb;
 
-	if (take_msb)
-		return offset_msb & 0xffff0000;
+	offset_msb = amvdec_read_dos(core, AV_SCRATCH_A + reg_offset);
 
-	return (offset_msb & 0x0000ffff) << 16;
+	if (frame_num & 1)
+		return offset_msb & GENMASK(31, 16);
+
+	/* Explicitly isolate the lower 16 bits using GENMASK before shifting */
+	return (offset_msb & GENMASK(15, 0)) << 16;
 }
 
 static void codec_h264_frames_ready(struct amvdec_session *sess, u32 status)
