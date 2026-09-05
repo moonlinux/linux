@@ -185,36 +185,49 @@ static int vp9_update_header(struct amvdec_core *core, struct vb2_buffer *buf)
 	return new_frame_size;
 }
 
-/* Pad the packet to at least 4KiB bytes otherwise the VDEC unit won't trigger
- * ISRs.
- * Also append a start code 000001ff at the end to trigger
+/*
+ * Pad the packet to at least 4KiB bytes otherwise the VDEC unit won't
+ * trigger ISRs. Also append a start code 000001ff at the end to trigger
  * the ESPARSER interrupt.
  */
-static u32 esparser_pad_start_code(struct amvdec_core *core,
+static int esparser_pad_start_code(struct amvdec_core *core,
 				   struct vb2_buffer *vb,
-				   u32 payload_size)
+				   u32 payload_size, u32 *pad_size)
 {
-	u32 pad_size = 0;
+	u32 plane_size = vb2_plane_size(vb, 0);
 	u8 *vaddr = vb2_plane_vaddr(vb, 0);
+	u32 padding = 0;
 
-	if (payload_size < ESPARSER_MIN_PACKET_SIZE) {
-		pad_size = ESPARSER_MIN_PACKET_SIZE - payload_size;
-		memset(vaddr + payload_size, 0, pad_size);
+	if (payload_size < ESPARSER_MIN_PACKET_SIZE)
+		padding = ESPARSER_MIN_PACKET_SIZE - payload_size;
+
+	if (payload_size > plane_size ||
+	    padding > plane_size - payload_size ||
+	    SEARCH_PATTERN_LEN >
+	    plane_size - payload_size - padding) {
+		dev_warn(core->dev,
+			 "%s: insufficient plane space: payload=%u pad=%u search=%u plane=%u\n",
+			 __func__, payload_size, padding,
+			 SEARCH_PATTERN_LEN, plane_size);
+		return -ENOSPC;
 	}
 
-	if ((payload_size + pad_size + SEARCH_PATTERN_LEN) >
-						vb2_plane_size(vb, 0)) {
-		dev_warn(core->dev, "%s: unable to pad start code\n", __func__);
-		return pad_size;
-	}
+	if (!vaddr)
+		return -EINVAL;
 
-	memset(vaddr + payload_size + pad_size, 0, SEARCH_PATTERN_LEN);
-	vaddr[payload_size + pad_size]     = 0x00;
-	vaddr[payload_size + pad_size + 1] = 0x00;
-	vaddr[payload_size + pad_size + 2] = 0x01;
-	vaddr[payload_size + pad_size + 3] = 0xff;
+	if (padding)
+		memset(vaddr + payload_size, 0, padding);
 
-	return pad_size;
+	memset(vaddr + payload_size + padding, 0, SEARCH_PATTERN_LEN);
+
+	vaddr[payload_size + padding] = 0x00;
+	vaddr[payload_size + padding + 1] = 0x00;
+	vaddr[payload_size + padding + 2] = 0x01;
+	vaddr[payload_size + padding + 3] = 0xff;
+
+	*pad_size = padding;
+
+	return 0;
 }
 
 static int
@@ -403,9 +416,14 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
 	}
 
 	/*
-	 * Calculate the parser padding before modifying the source buffer.
+	 * Validate the required padding and append the parser start code.
 	 */
-	pad_size = esparser_pad_start_code(core, vb, payload_size);
+	ret = esparser_pad_start_code(core, vb, payload_size, &pad_size);
+	if (ret) {
+		dev_err(core->dev, "esparser: pad start code failed (%d)\n",
+			ret);
+		return ret;
+	}
 
 	/*
 	 * Protect the size calculation against overflow.
@@ -472,9 +490,16 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
 		payload_size = ret;
 
 		/*
-		 * Recalculate the parser padding after VP9 header insertion.
+		 * Recalculate the padding and append the parser start code
+		 * after VP9 header insertion.
 		 */
-		pad_size = esparser_pad_start_code(core, vb, payload_size);
+		ret = esparser_pad_start_code(core, vb, payload_size,
+					      &pad_size);
+		if (ret) {
+			dev_err(core->dev, "esparser: pad start code failed (%d)\n",
+				ret);
+			return ret;
+		}
 
 		if (payload_size > U32_MAX - pad_size)
 			return -EOVERFLOW;
