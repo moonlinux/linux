@@ -21,6 +21,8 @@
 	#define GEN_PWR_VDEC_HEVC (BIT(7) | BIT(6))
 	#define GEN_PWR_VDEC_HEVC_SM1 (BIT(2))
 
+#define HEVC_IMEM_DMA_CTRL_BUSY BIT(15)
+
 #define MC_SIZE	(4096 * 4)
 
 static int vdec_hevc_load_firmware(struct amvdec_session *sess,
@@ -29,10 +31,10 @@ static int vdec_hevc_load_firmware(struct amvdec_session *sess,
 	struct amvdec_core *core = sess->core;
 	struct device *dev = core->dev_dec;
 	const struct firmware *fw;
-	static void *mc_addr;
-	static dma_addr_t mc_addr_map;
+	void *mc_addr;
+	dma_addr_t mc_addr_map;
+	u32 val;
 	int ret;
-	u32 i = 100;
 
 	ret = request_firmware(&fw, fwname, dev);
 	if (ret < 0)  {
@@ -47,8 +49,8 @@ static int vdec_hevc_load_firmware(struct amvdec_session *sess,
 		goto release_firmware;
 	}
 
-	mc_addr = dma_alloc_coherent(core->dev, MC_SIZE, &mc_addr_map,
-				     GFP_KERNEL);
+	mc_addr = dma_alloc_coherent(core->dev, MC_SIZE,
+				     &mc_addr_map, GFP_KERNEL);
 	if (!mc_addr) {
 		ret = -ENOMEM;
 		goto release_firmware;
@@ -61,16 +63,33 @@ static int vdec_hevc_load_firmware(struct amvdec_session *sess,
 
 	amvdec_write_dos(core, HEVC_IMEM_DMA_ADR, mc_addr_map);
 	amvdec_write_dos(core, HEVC_IMEM_DMA_COUNT, MC_SIZE / 4);
-	amvdec_write_dos(core, HEVC_IMEM_DMA_CTRL, (0x8000 | (7 << 16)));
 
-	while (i && (readl(core->dos_base + HEVC_IMEM_DMA_CTRL) & 0x8000))
-		i--;
+	/*
+	 * Ensure all prior writes are visible before starting
+	 * the firmware DMA transfer.
+	 */
+	wmb();
 
-	if (i == 0) {
-		dev_err(dev, "Firmware load fail (DMA hang?)\n");
-		ret = -ENODEV;
+	amvdec_write_dos(core, HEVC_IMEM_DMA_CTRL,
+			 HEVC_IMEM_DMA_CTRL_BUSY | (7 << 16));
+
+	ret = readl_poll_timeout_atomic(core->dos_base + HEVC_IMEM_DMA_CTRL,
+					val,
+					!(val & HEVC_IMEM_DMA_CTRL_BUSY),
+					10, 10000);
+	if (ret) {
+		dev_err(dev, "HEVC firmware load fail (DMA hang?)\n");
+
+		/* Stop the stalled DMA and disable the IPP block. */
+		writel(0, core->dos_base + HEVC_IMEM_DMA_CTRL);
+		amvdec_write_dos(core, HEVCD_IPP_TOP_CNTL, 0);
+		ret = -ETIMEDOUT;
+		goto free_dma;
 	}
 
+	ret = 0;
+
+free_dma:
 	dma_free_coherent(core->dev, MC_SIZE, mc_addr, mc_addr_map);
 release_firmware:
 	release_firmware(fw);
