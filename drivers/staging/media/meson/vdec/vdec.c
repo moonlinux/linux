@@ -493,6 +493,12 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 			sess->recycle_thread = NULL;
 		}
 
+		/*
+		 * The parser worker must have stopped before freeing
+		 * any session resources.
+		 */
+		cancel_work_sync(&sess->esparser_queue_work);
+
 		/* Acquire the current session before accessing its state */
 		if (core->vdec_irq > 0)
 			synchronize_irq(core->vdec_irq);
@@ -1042,6 +1048,12 @@ static int vdec_close(struct file *file)
 		smp_store_release(&core->cur_sess, NULL);
 		is_owner = true;
 	}
+
+	/*
+	 * The parser worker must have stopped before freeing
+	 * any session resources.
+	 */
+	cancel_work_sync(&sess->esparser_queue_work);
 
 	/* Acquire the current session before accessing its state */
 	if (core->vdec_irq > 0)
