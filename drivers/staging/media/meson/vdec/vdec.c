@@ -1176,6 +1176,7 @@ static void vdec_v4l2_dev_release(struct v4l2_device *v4l2_dev)
 		v4l2_m2m_release(core->m2m_dev);
 
 	mutex_destroy(&core->lock);
+	mutex_destroy(&core->esparser_lock);
 	kfree(core);
 }
 
@@ -1279,6 +1280,7 @@ static int vdec_probe(struct platform_device *pdev)
 	core->vdev_dec = vdev;
 	core->dev_dec = dev;
 	mutex_init(&core->lock);
+	mutex_init(&core->esparser_lock);
 	init_waitqueue_head(&core->esparser_wq);
 
 	strscpy(vdev->name, "meson-video-decoder", sizeof(vdev->name));

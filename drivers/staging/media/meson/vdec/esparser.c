@@ -226,6 +226,8 @@ esparser_write_data(struct amvdec_core *core, dma_addr_t addr, u32 size)
 	if (size > U32_MAX - SEARCH_PATTERN_LEN)
 		return -EOVERFLOW;
 
+	mutex_lock(&core->esparser_lock);
+
 	/*
 	 * Clear the previous operation before starting a new one.
 	 */
@@ -271,6 +273,8 @@ esparser_write_data(struct amvdec_core *core, dma_addr_t addr, u32 size)
 	} else {
 		ret = 0;
 	}
+
+	mutex_unlock(&core->esparser_lock);
 
 	return ret;
 }
@@ -464,6 +468,8 @@ int esparser_power_up(struct amvdec_session *sess)
 	struct amvdec_core *core = sess->core;
 	struct amvdec_ops *vdec_ops = sess->fmt_out->vdec_ops;
 
+	mutex_lock(&core->esparser_lock);
+
 	reset_control_reset(core->esparser_reset);
 	amvdec_write_parser(core, PARSER_CONFIG,
 			    (10 << PS_CFG_PFIFO_EMPTY_CNT_BIT) |
@@ -501,6 +507,8 @@ int esparser_power_up(struct amvdec_session *sess)
 	amvdec_write_parser(core, PARSER_CONTROL,
 			    ES_SEARCH | ES_PARSER_START);
 
+	mutex_unlock(&core->esparser_lock);
+
 	return 0;
 }
 
@@ -508,12 +516,16 @@ int esparser_power_down(struct amvdec_session *sess)
 {
 	struct amvdec_core *core = sess->core;
 
+	mutex_lock(&core->esparser_lock);
+
 	amvdec_write_parser(core, PARSER_INT_ENABLE, 0);
 	amvdec_write_parser(core, PARSER_CONTROL, 0);
 	amvdec_write_parser(core, PARSER_INT_STATUS, 0xffff);
 	amvdec_write_parser(core, PFIFO_RD_PTR, 0);
 	amvdec_write_parser(core, PFIFO_WR_PTR, 0);
 	reset_control_reset(core->esparser_reset);
+
+	mutex_unlock(&core->esparser_lock);
 
 	return 0;
 }
