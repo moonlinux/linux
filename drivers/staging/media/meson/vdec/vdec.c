@@ -493,6 +493,10 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 			sess->recycle_thread = NULL;
 		}
 
+		/* Acquire the current session before accessing its state */
+		if (core->vdec_irq > 0)
+			synchronize_irq(core->vdec_irq);
+
 		mutex_lock(&core->lock);
 
 		if (is_owner) {
@@ -1035,6 +1039,10 @@ static int vdec_close(struct file *file)
 		is_owner = true;
 	}
 
+	/* Acquire the current session before accessing its state */
+	if (core->vdec_irq > 0)
+		synchronize_irq(core->vdec_irq);
+
 	mutex_lock(&core->lock);
 
 	if (is_owner) {
@@ -1087,7 +1095,12 @@ static const struct v4l2_file_operations vdec_fops = {
 static irqreturn_t vdec_isr(int irq, void *data)
 {
 	struct amvdec_core *core = data;
-	struct amvdec_session *sess = core->cur_sess;
+	struct amvdec_session *sess;
+
+	/* Secure an atomic acquire snapshot to protect against concurrent teardown */
+	sess = smp_load_acquire(&core->cur_sess);
+	if (!sess)
+		return IRQ_NONE;
 
 	sess->last_irq_jiffies = get_jiffies_64();
 
@@ -1097,7 +1110,12 @@ static irqreturn_t vdec_isr(int irq, void *data)
 static irqreturn_t vdec_threaded_isr(int irq, void *data)
 {
 	struct amvdec_core *core = data;
-	struct amvdec_session *sess = core->cur_sess;
+	struct amvdec_session *sess;
+
+	/* Prevent late-stage threaded interrupts from dereferencing a NULL session */
+	sess = smp_load_acquire(&core->cur_sess);
+	if (!sess)
+		return IRQ_NONE;
 
 	return sess->fmt_out->codec_ops->threaded_isr(sess);
 }
@@ -1137,7 +1155,6 @@ static int vdec_probe(struct platform_device *pdev)
 	struct video_device *vdev;
 	struct amvdec_core *core;
 	const struct of_device_id *of_id;
-	int irq;
 	int ret;
 
 	core = kzalloc_obj(*core);
@@ -1193,13 +1210,13 @@ static int vdec_probe(struct platform_device *pdev)
 	if (IS_ERR(core->vdec_hevc_clk))
 		return -EPROBE_DEFER;
 
-	irq = platform_get_irq_byname(pdev, "vdec");
-	if (irq < 0)
-		return irq;
+	core->vdec_irq = platform_get_irq_byname(pdev, "vdec");
+	if (core->vdec_irq < 0)
+		return core->vdec_irq;
 
-	ret = devm_request_threaded_irq(core->dev, irq, vdec_isr,
-					vdec_threaded_isr, IRQF_ONESHOT,
-					"vdec", core);
+	ret = devm_request_threaded_irq(core->dev, core->vdec_irq,
+					vdec_isr, vdec_threaded_isr,
+					IRQF_ONESHOT, "vdec", core);
 	if (ret)
 		return ret;
 
