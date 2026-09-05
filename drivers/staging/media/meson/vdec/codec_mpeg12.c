@@ -119,10 +119,16 @@ static int codec_mpeg12_stop(struct amvdec_session *sess)
 	struct codec_mpeg12 *mpeg12 = sess->priv;
 	struct amvdec_core *core = sess->core;
 
+	if (!mpeg12)
+		return 0;
+
 	if (mpeg12->workspace_vaddr)
 		dma_free_coherent(core->dev, SIZE_WORKSPACE,
 				  mpeg12->workspace_vaddr,
 				  mpeg12->workspace_paddr);
+
+	kfree(mpeg12);
+	sess->priv = NULL;
 
 	return 0;
 }
