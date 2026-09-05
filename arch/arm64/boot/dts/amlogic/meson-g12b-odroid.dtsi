@@ -439,6 +439,7 @@
 
 &usb {
 	status = "okay";
+	vbus-supply = <&usb_pwr_en>;
 };
 
 &usb2_phy0 {
