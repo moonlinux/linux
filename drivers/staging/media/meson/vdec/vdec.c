@@ -32,6 +32,10 @@ struct dummy_buf {
 /* 16 MiB for parsed bitstream swap exchange */
 #define SIZE_VIFIFO SZ_16M
 
+static void vdec_free_canvas(struct amvdec_session *sess);
+static void vdec_reset_timestamps(struct amvdec_session *sess);
+static void vdec_reset_bufs_recycle(struct amvdec_session *sess);
+
 static u32 get_output_size(u32 width, u32 height)
 {
 	return ALIGN(width * height, SZ_64K);
@@ -354,14 +358,27 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 	sess->sequence_cap = 0;
 	sess->sequence_out = 0;
 
-	if (vdec_codec_needs_recycle(sess))
+	if (vdec_codec_needs_recycle(sess)) {
 		sess->recycle_thread = kthread_run(vdec_recycle_thread, sess,
 						   "vdec_recycle");
+		if (IS_ERR(sess->recycle_thread)) {
+			ret = PTR_ERR(sess->recycle_thread);
+			sess->recycle_thread = NULL;
+			goto err_poweroff;
+		}
+	}
 
 	schedule_work(&sess->esparser_queue_work);
 
 	return 0;
 
+err_poweroff:
+	vdec_poweroff(sess);
+	vdec_free_canvas(sess);
+	vdec_reset_timestamps(sess);
+	vdec_reset_bufs_recycle(sess);
+	kfree(sess->priv);
+	sess->priv = NULL;
 err_free_vififo:
 	if (sess->vififo_vaddr) {
 		dma_free_coherent(sess->core->dev,
@@ -456,9 +473,12 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 	mutex_unlock(&core->lock);
 
 	if (full_cleanup) {
-		if ((q->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ||
-		     !sess->streamon_out) && vdec_codec_needs_recycle(sess)) {
+		/*
+		 * Stop the recycle thread before tearing down session resources.
+		 */
+		if (!IS_ERR_OR_NULL(sess->recycle_thread)) {
 			kthread_stop(sess->recycle_thread);
+			sess->recycle_thread = NULL;
 		}
 
 		mutex_lock(&core->lock);
@@ -985,6 +1005,11 @@ static int vdec_close(struct file *file)
 {
 	struct amvdec_session *sess = file_to_amvdec_session(file);
 	struct amvdec_core *core = sess->core;
+
+	if (!IS_ERR_OR_NULL(sess->recycle_thread)) {
+		kthread_stop(sess->recycle_thread);
+		sess->recycle_thread = NULL;
+	}
 
 	mutex_lock(&core->lock);
 	vdec_poweroff(sess);
