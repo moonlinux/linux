@@ -367,69 +367,179 @@ static u32 esparser_get_offset(struct amvdec_session *sess)
 static int
 esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
 {
-	int ret;
 	struct vb2_buffer *vb = &vbuf->vb2_buf;
 	struct amvdec_core *core = sess->core;
 	struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
 	u32 payload_size = vb2_get_plane_payload(vb, 0);
+	u32 plane_size = vb2_plane_size(vb, 0);
+	u32 total_size, free_space, offset;
+	u32 num_dst_bufs = 0, pad_size;
 	dma_addr_t phy = vb2_dma_contig_plane_dma_addr(vb, 0);
-	u32 num_dst_bufs = 0;
-	u32 offset;
-	u32 pad_size;
+	int ret;
 
 	/*
-	 * When max ref frame is held by VP9, this should be -= 3 to prevent a
-	 * shortage of CAPTURE buffers on the decoder side.
-	 * For the future, a good enhancement of the way this is handled could
-	 * be to notify new capture buffers to the decoding modules, so that
-	 * they could pause when there is no capture buffer available and
-	 * resume on this notification.
+	 * Check whether enough destination buffers are available before
+	 * modifying the source buffer.
 	 */
 	if (sess->fmt_out->pixfmt == V4L2_PIX_FMT_VP9) {
 		if (codec_ops->num_pending_bufs)
 			num_dst_bufs = codec_ops->num_pending_bufs(sess);
 
-		num_dst_bufs += v4l2_m2m_num_dst_bufs_ready(sess->m2m_ctx);
-		num_dst_bufs -= 3;
+		num_dst_bufs +=
+			v4l2_m2m_num_dst_bufs_ready(sess->m2m_ctx);
 
-		if (esparser_vififo_get_free_space(sess) < payload_size ||
-		    atomic_read(&sess->esparser_queued_bufs) >= num_dst_bufs)
+		if (num_dst_bufs >= 3)
+			num_dst_bufs -= 3;
+		else
+			num_dst_bufs = 0;
+
+		if (atomic_read(&sess->esparser_queued_bufs) >= num_dst_bufs) {
+			dev_dbg_ratelimited(core->dev,
+					    "esparser: VP9 destination buffers full (queued=%d available=%u)\n",
+					    atomic_read(&sess->esparser_queued_bufs),
+					    num_dst_bufs);
 			return -EAGAIN;
-	} else if (esparser_vififo_get_free_space(sess) < payload_size) {
-		return -EAGAIN;
+		}
 	}
 
+	/*
+	 * Calculate the parser padding before modifying the source buffer.
+	 */
+	pad_size = esparser_pad_start_code(core, vb, payload_size);
+
+	/*
+	 * Protect the size calculation against overflow.
+	 */
+	if (payload_size > U32_MAX - pad_size)
+		return -EOVERFLOW;
+
+	total_size = payload_size + pad_size;
+
+	/*
+	 * esparser_write_data() causes the parser to fetch additional
+	 * SEARCH_PATTERN_LEN bytes for start-code detection.
+	 */
+	if (plane_size < SEARCH_PATTERN_LEN ||
+	    total_size > plane_size - SEARCH_PATTERN_LEN) {
+		dev_err(core->dev,
+			"esparser: frame exceeds plane bounds (payload=%u pad=%u total=%u plane=%u)\n",
+			payload_size, pad_size, total_size, plane_size);
+		return -EINVAL;
+	}
+
+	/*
+	 * VP9 header insertion increases the amount of data submitted to
+	 * the parser. Reserve space for the maximum possible number of
+	 * VP9 frame headers before modifying the buffer.
+	 *
+	 * A VP9 superframe can contain at most eight frames.
+	 */
+	if (sess->fmt_out->pixfmt == V4L2_PIX_FMT_VP9) {
+		u32 max_size;
+
+		if (payload_size >
+		    U32_MAX - (8 * VP9_HEADER_SIZE) - pad_size)
+			return -EOVERFLOW;
+
+		max_size = payload_size + 8 * VP9_HEADER_SIZE + pad_size;
+
+		free_space = esparser_vififo_get_free_space(sess);
+		if (free_space < max_size) {
+			dev_dbg_ratelimited(core->dev,
+					    "esparser: VIFIFO backpressure (free=%u need=%u)\n",
+					    free_space, max_size);
+			return -EAGAIN;
+		}
+
+		/*
+		 * The FIFO has enough room for the worst-case expanded VP9
+		 * frame, so it is now safe to modify the source buffer.
+		 */
+		ret = vp9_update_header(core, vb);
+		if (ret < 0) {
+			dev_err_ratelimited(core->dev,
+					    "esparser: VP9 parsing error (%d)\n",
+					    ret);
+			return ret;
+		}
+
+		if (ret == 0) {
+			dev_err(core->dev,
+				"esparser: VP9 header update failed\n");
+			return -EBADMSG;
+		}
+
+		payload_size = ret;
+
+		/*
+		 * Recalculate the parser padding after VP9 header insertion.
+		 */
+		pad_size = esparser_pad_start_code(core, vb, payload_size);
+
+		if (payload_size > U32_MAX - pad_size)
+			return -EOVERFLOW;
+
+		total_size = payload_size + pad_size;
+
+		/*
+		 * The worst-case check above guarantees this should fit, but
+		 * use the actual expanded size for the final check.
+		 */
+		free_space = esparser_vififo_get_free_space(sess);
+		if (free_space < total_size) {
+			dev_err(core->dev,
+				"esparser: VIFIFO space changed during VP9 setup (free=%u need=%u)\n",
+				free_space, total_size);
+			return -EAGAIN;
+		}
+	} else {
+		/*
+		 * For non-VP9 formats the payload is not modified, so the
+		 * exact parser input size can be checked directly.
+		 */
+		free_space = esparser_vififo_get_free_space(sess);
+		if (free_space < total_size) {
+			dev_dbg_ratelimited(core->dev,
+					    "esparser: VIFIFO backpressure (free=%u need=%u)\n",
+					    free_space, total_size);
+			return -EAGAIN;
+		}
+	}
+
+	/*
+	 * Capture the parser write position before registering the timestamp.
+	 */
 	offset = esparser_get_offset(sess);
 
-	ret = amvdec_add_ts(sess, vb->timestamp, vbuf->timecode, offset, vbuf->flags);
+	ret = amvdec_add_ts(sess, vb->timestamp, vbuf->timecode, offset,
+			    vbuf->flags);
 	if (ret)
 		return ret;
 
-	dev_dbg(core->dev, "esparser: ts = %llu pld_size = %u offset = %08X flags = %08X\n",
-		vb->timestamp, payload_size, offset, vbuf->flags);
+	dev_dbg(core->dev,
+		"esparser: ts=%llu payload=%u pad=%u total=%u offset=%08X flags=%08X\n",
+		vb->timestamp, payload_size, pad_size, total_size,
+		offset, vbuf->flags);
 
 	vbuf->flags = 0;
 	vbuf->field = V4L2_FIELD_NONE;
 	vbuf->sequence = sess->sequence_out++;
 
-	if (sess->fmt_out->pixfmt == V4L2_PIX_FMT_VP9) {
-		payload_size = vp9_update_header(core, vb);
-		if (payload_size < 0) {
-			dev_err(core->dev, "esparser: VP9 header update failed: %d\n",
-				payload_size);
-			amvdec_remove_ts(sess, vb->timestamp);
-			return payload_size;
-		}
-	}
+	/*
+	 * Submit the complete padded buffer to the parser.
+	 */
+	ret = esparser_write_data(core, phy, total_size);
+	if (ret < 0) {
+		dev_warn(core->dev,
+			 "esparser: input parsing hardware error: %d\n",
+			 ret);
 
-	pad_size = esparser_pad_start_code(core, vb, payload_size);
-
-	ret = esparser_write_data(core, phy, payload_size + pad_size);
-
-	if (ret) {
-		dev_warn(core->dev, "esparser: input parsing error: %d\n", ret);
+		/*
+		 * The timestamp was registered before hardware submission,
+		 * so remove it when submission fails.
+		 */
 		amvdec_remove_ts(sess, vb->timestamp);
-		amvdec_write_parser(core, PARSER_FETCH_CMD, 0);
+
 		return ret;
 	}
 
