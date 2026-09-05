@@ -360,14 +360,35 @@ static void codec_h264_src_change(struct amvdec_session *sess)
 	mb_total = (parsed_info >> MB_TOTAL_BIT) & MB_TOTAL_MASK;
 	/* Number of macroblocks per line */
 	h264->mb_width = parsed_info & MB_WIDTH_MASK;
+
+	if (!h264->mb_width || !mb_total ||
+	    mb_total % h264->mb_width) {
+		dev_err(core->dev,
+			"invalid H.264 macroblocks: width=%u total=%u\n",
+			h264->mb_width, mb_total);
+		amvdec_abort(sess);
+		return;
+	}
+
 	/* Number of macroblock lines */
 	h264->mb_height = mb_total / h264->mb_width;
 
 	h264->max_refs = ((parsed_info >> MAX_REF_BIT) & MAX_REF_MASK) + 1;
 
 	crop_infor = amvdec_read_dos(core, AV_SCRATCH_6);
-	crop_bottom = (crop_infor & 0xff);
+	crop_bottom = crop_infor & 0xff;
 	crop_right = (crop_infor >> 16) & 0xff;
+
+	if (crop_right >= h264->mb_width * 16 ||
+	    crop_bottom >= h264->mb_height * 16) {
+		dev_err(core->dev,
+			"invalid H.264 crop: %u x %u, frame=%u x %u\n",
+			crop_right, crop_bottom,
+			h264->mb_width * 16,
+			h264->mb_height * 16);
+		amvdec_abort(sess);
+		return;
+	}
 
 	frame_width = h264->mb_width * 16 - crop_right;
 	frame_height = h264->mb_height * 16 - crop_bottom;
@@ -376,7 +397,8 @@ static void codec_h264_src_change(struct amvdec_session *sess)
 		frame_width, frame_height, crop_right, crop_bottom);
 
 	codec_h264_set_par(sess);
-	amvdec_src_change(sess, frame_width, frame_height, h264->max_refs + 5);
+	amvdec_src_change(sess, frame_width, frame_height,
+			  h264->max_refs + 5);
 }
 
 /*
