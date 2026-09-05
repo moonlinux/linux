@@ -185,6 +185,10 @@ static void vdec_m2m_job_abort(void *priv)
 {
 	struct amvdec_session *sess = priv;
 
+	WRITE_ONCE(sess->should_stop, true);
+
+	cancel_work_sync(&sess->esparser_queue_work);
+
 	v4l2_m2m_job_finish(sess->core->m2m_dev, sess->m2m_ctx);
 }
 
