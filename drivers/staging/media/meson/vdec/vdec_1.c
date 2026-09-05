@@ -22,6 +22,8 @@
 
 #define MC_SIZE			(4096 * 4)
 
+#define IMEM_DMA_CTRL_BUSY    BIT(15)
+
 static int
 vdec_1_load_firmware(struct amvdec_session *sess, const char *fwname)
 {
@@ -29,27 +31,27 @@ vdec_1_load_firmware(struct amvdec_session *sess, const char *fwname)
 	struct amvdec_core *core = sess->core;
 	struct device *dev = core->dev_dec;
 	struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
-	static void *mc_addr;
-	static dma_addr_t mc_addr_map;
+	void *mc_addr;
+	dma_addr_t mc_addr_map;
+	u32 val;
 	int ret;
-	u32 i = 1000;
 
 	ret = request_firmware(&fw, fwname, dev);
 	if (ret < 0)
-		return -EINVAL;
+		return ret;
 
 	if (fw->size < MC_SIZE) {
 		dev_err(dev, "Firmware size %zu is too small. Expected %u.\n",
 			fw->size, MC_SIZE);
 		ret = -EINVAL;
-		goto release_firmware;
+		goto release_fw;
 	}
 
-	mc_addr = dma_alloc_coherent(core->dev, MC_SIZE,
-				     &mc_addr_map, GFP_KERNEL);
+	mc_addr = dma_alloc_coherent(dev, MC_SIZE, &mc_addr_map,
+				     GFP_KERNEL);
 	if (!mc_addr) {
 		ret = -ENOMEM;
-		goto release_firmware;
+		goto release_fw;
 	}
 
 	memcpy(mc_addr, fw->data, MC_SIZE);
@@ -61,13 +63,24 @@ vdec_1_load_firmware(struct amvdec_session *sess, const char *fwname)
 
 	amvdec_write_dos(core, IMEM_DMA_ADR, mc_addr_map);
 	amvdec_write_dos(core, IMEM_DMA_COUNT, MC_SIZE / 4);
-	amvdec_write_dos(core, IMEM_DMA_CTRL, (0x8000 | (7 << 16)));
 
-	while (--i && amvdec_read_dos(core, IMEM_DMA_CTRL) & 0x8000);
+	/*
+	 * Ensure the DMA address and count are visible before
+	 * starting the firmware transfer.
+	 */
+	wmb();
 
-	if (i == 0) {
-		dev_err(dev, "Firmware load fail (DMA hang?)\n");
-		ret = -EINVAL;
+	amvdec_write_dos(core, IMEM_DMA_CTRL,
+			 IMEM_DMA_CTRL_BUSY | (7 << 16));
+
+	ret = readl_poll_timeout_atomic(core->dos_base + IMEM_DMA_CTRL,
+					val,
+					!(val & IMEM_DMA_CTRL_BUSY),
+					10, 10000);
+	if (ret) {
+		dev_err(dev, "Firmware DMA timed out\n");
+		amvdec_write_dos(core, IMEM_DMA_CTRL, 0);
+		ret = -ETIMEDOUT;
 		goto free_mc;
 	}
 
@@ -77,8 +90,8 @@ vdec_1_load_firmware(struct amvdec_session *sess, const char *fwname)
 							fw->size - MC_SIZE);
 
 free_mc:
-	dma_free_coherent(core->dev, MC_SIZE, mc_addr, mc_addr_map);
-release_firmware:
+	dma_free_coherent(dev, MC_SIZE, mc_addr, mc_addr_map);
+release_fw:
 	release_firmware(fw);
 	return ret;
 }
