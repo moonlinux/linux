@@ -225,6 +225,7 @@ static const struct panfrost_model gpu_models[] = {
 	GPU_MODEL(g51, 0x7000),
 	GPU_MODEL(g76, 0x7001),
 	GPU_MODEL(g52, 0x7002),
+	GPU_MODEL(g52, 0x7212),
 	GPU_MODEL(g31, 0x7003,
 		GPU_REV(g31, 1, 0)),
 
