@@ -2164,6 +2164,10 @@ unlock:
 
 static irqreturn_t codec_vp9_isr(struct amvdec_session *sess)
 {
+	struct amvdec_core *core = sess->core;
+
+	amvdec_write_dos(core, HEVC_ASSIST_MBOX1_CLR_REG, 1);
+
 	return IRQ_WAKE_THREAD;
 }
 
