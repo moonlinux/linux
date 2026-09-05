@@ -251,22 +251,26 @@ EXPORT_SYMBOL_GPL(amvdec_add_ts);
 
 void amvdec_remove_ts(struct amvdec_session *sess, u64 ts)
 {
-	struct amvdec_timestamp *tmp;
+	struct amvdec_timestamp *tmp, *match = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sess->ts_spinlock, flags);
+
 	list_for_each_entry(tmp, &sess->timestamps, list) {
 		if (tmp->ts == ts) {
 			list_del(&tmp->list);
-			kfree(tmp);
-			goto unlock;
+			match = tmp;
+			break;
 		}
 	}
-	dev_warn(sess->core->dev_dec,
-		 "Couldn't remove buffer with timestamp %llu from list\n", ts);
 
-unlock:
 	spin_unlock_irqrestore(&sess->ts_spinlock, flags);
+
+	if (!match)
+		dev_warn(sess->core->dev_dec,
+			 "Couldn't remove timestamp %llu from list\n", ts);
+
+	kfree(match);
 }
 EXPORT_SYMBOL_GPL(amvdec_remove_ts);
 
