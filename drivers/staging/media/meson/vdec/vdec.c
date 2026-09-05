@@ -449,6 +449,7 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 	struct vb2_v4l2_buffer *buf;
 	enum amvdec_status old_status;
 	bool full_cleanup = false;
+	bool is_owner = false;
 
 	/* Hold core lock to evaluate state mutations and isolate hardware safely */
 	mutex_lock(&core->lock);
@@ -470,6 +471,12 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 		}
 	}
 
+	if (core->cur_sess == sess) {
+		/* Safely clear hardware ownership since we were confirmed as the owner */
+		smp_store_release(&core->cur_sess, NULL);
+		is_owner = true;
+	}
+
 	mutex_unlock(&core->lock);
 
 	if (full_cleanup) {
@@ -482,24 +489,29 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 		}
 
 		mutex_lock(&core->lock);
-		vdec_poweroff(sess);
-		vdec_free_canvas(sess);
 
-		if (sess->vififo_vaddr) {
-			dma_free_coherent(sess->core->dev,
-					  sess->vififo_size,
-					  sess->vififo_vaddr,
-					  sess->vififo_paddr);
-			sess->vififo_vaddr = NULL;
-			sess->vififo_paddr = 0;
+		if (is_owner) {
+			vdec_poweroff(sess);
+			vdec_free_canvas(sess);
+
+			if (sess->vififo_vaddr) {
+				dma_free_coherent(sess->core->dev,
+						  sess->vififo_size,
+						  sess->vififo_vaddr,
+						  sess->vififo_paddr);
+				sess->vififo_vaddr = NULL;
+				sess->vififo_paddr = 0;
+			}
+
+			vdec_reset_timestamps(sess);
+			vdec_reset_bufs_recycle(sess);
+
+			sess->status = STATUS_STOPPED;
+
+			kfree(sess->priv);
+			sess->priv = NULL;
 		}
 
-		vdec_reset_timestamps(sess);
-		vdec_reset_bufs_recycle(sess);
-		core->cur_sess = NULL;
-
-		kfree(sess->priv);
-		sess->priv = NULL;
 		mutex_unlock(&core->lock);
 	} else {
 		if (sess->status == STATUS_NEEDS_RESUME)
@@ -1005,31 +1017,44 @@ static int vdec_close(struct file *file)
 {
 	struct amvdec_session *sess = file_to_amvdec_session(file);
 	struct amvdec_core *core = sess->core;
+	bool is_owner = false;
 
 	if (!IS_ERR_OR_NULL(sess->recycle_thread)) {
 		kthread_stop(sess->recycle_thread);
 		sess->recycle_thread = NULL;
 	}
 
-	mutex_lock(&core->lock);
-	vdec_poweroff(sess);
-	vdec_free_canvas(sess);
-
-	if (sess->vififo_vaddr) {
-		dma_free_coherent(core->dev,
-				  sess->vififo_size,
-				  sess->vififo_vaddr,
-				  sess->vififo_paddr);
-
-		sess->vififo_vaddr = NULL;
-		sess->vififo_paddr = 0;
+	if (core->cur_sess == sess) {
+		/* Safely clear hardware ownership since we were confirmed as the owner */
+		smp_store_release(&core->cur_sess, NULL);
+		is_owner = true;
 	}
 
-	vdec_reset_timestamps(sess);
-	vdec_reset_bufs_recycle(sess);
+	mutex_lock(&core->lock);
 
-	kfree(sess->priv);
-	sess->priv = NULL;
+	if (is_owner) {
+		vdec_poweroff(sess);
+		vdec_free_canvas(sess);
+
+		if (sess->vififo_vaddr) {
+			dma_free_coherent(sess->core->dev,
+					  sess->vififo_size,
+					  sess->vififo_vaddr,
+					  sess->vififo_paddr);
+
+			sess->vififo_vaddr = NULL;
+			sess->vififo_paddr = 0;
+		}
+
+		vdec_reset_timestamps(sess);
+		vdec_reset_bufs_recycle(sess);
+
+		sess->status = STATUS_STOPPED;
+
+		kfree(sess->priv);
+		sess->priv = NULL;
+	}
+
 	mutex_unlock(&core->lock);
 
 	v4l2_m2m_ctx_release(sess->m2m_ctx);
