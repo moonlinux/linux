@@ -1016,7 +1016,7 @@ static int vdec_open(struct file *file)
 	sess->height = 720;
 	sess->pixelaspect.numerator = 1;
 	sess->pixelaspect.denominator = 1;
-	sess->src_buffer_size = SZ_1M;
+	sess->src_buffer_size = SZ_4M;
 
 	INIT_LIST_HEAD(&sess->timestamps);
 	INIT_LIST_HEAD(&sess->bufs_recycle);
