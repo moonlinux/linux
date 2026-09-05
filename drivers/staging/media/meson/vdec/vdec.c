@@ -497,6 +497,10 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 		if (core->vdec_irq > 0)
 			synchronize_irq(core->vdec_irq);
 
+		/* Ensure esparser ISR finishes executing */
+		if (core->esparser_irq > 0)
+			synchronize_irq(core->esparser_irq);
+
 		mutex_lock(&core->lock);
 
 		if (is_owner) {
@@ -1042,6 +1046,10 @@ static int vdec_close(struct file *file)
 	/* Acquire the current session before accessing its state */
 	if (core->vdec_irq > 0)
 		synchronize_irq(core->vdec_irq);
+
+	/* Ensure esparser ISR finishes executing */
+	if (core->esparser_irq > 0)
+		synchronize_irq(core->esparser_irq);
 
 	mutex_lock(&core->lock);
 

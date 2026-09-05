@@ -58,11 +58,18 @@ static int search_done;
 
 static irqreturn_t esparser_isr(int irq, void *dev)
 {
-	int int_status;
 	struct amvdec_core *core = dev;
+	u32 int_status;
 
 	int_status = amvdec_read_parser(core, PARSER_INT_STATUS);
+	if (!int_status)
+		return IRQ_NONE;
+
 	amvdec_write_parser(core, PARSER_INT_STATUS, int_status);
+
+	/* Secure an atomic acquire snapshot to protect against concurrent teardown */
+	if (!smp_load_acquire(&core->cur_sess))
+		return IRQ_NONE;
 
 	if (int_status & PARSER_INTSTAT_SC_FOUND) {
 		amvdec_write_parser(core, PFIFO_RD_PTR, 0);
@@ -433,14 +440,13 @@ int esparser_init(struct platform_device *pdev, struct amvdec_core *core)
 {
 	struct device *dev = &pdev->dev;
 	int ret;
-	int irq;
 
-	irq = platform_get_irq_byname(pdev, "esparser");
-	if (irq < 0)
-		return irq;
+	core->esparser_irq = platform_get_irq_byname(pdev, "esparser");
+	if (core->esparser_irq < 0)
+		return core->esparser_irq;
 
-	ret = devm_request_irq(dev, irq, esparser_isr, IRQF_SHARED,
-			       "esparserirq", core);
+	ret = devm_request_irq(dev, core->esparser_irq, esparser_isr,
+			       IRQF_SHARED, "esparserirq", core);
 	if (ret) {
 		dev_err(dev, "Failed requesting ESPARSER IRQ\n");
 		return ret;
