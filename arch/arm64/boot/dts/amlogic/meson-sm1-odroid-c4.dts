@@ -56,3 +56,7 @@
 &ir {
 	linux,rc-map-name = "rc-odroid";
 };
+
+&mali {
+	mali-supply = <&vddgpu>;
+};

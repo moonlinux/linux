@@ -109,6 +109,10 @@
 	};
 };
 
+&mali {
+	mali-supply = <&vddgpu>;
+};
+
 &pcie {
 	status = "okay";
 	reset-gpios = <&gpio GPIOH_4 GPIO_ACTIVE_LOW>;

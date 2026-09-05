@@ -128,6 +128,23 @@
 		regulator-always-on;
 	};
 
+	vddgpu: regulator-vddgpu {
+		compatible = "pwm-regulator";
+
+		regulator-name = "VDDEE";
+		regulator-min-microvolt = <721000>;
+		regulator-max-microvolt = <1022000>;
+
+		pwm-supply = <&main_12v>;
+
+		/* VDDEE_PWM from GPIOE bank */
+		pwms = <&pwm_ef 0 1250 0>;
+		pwm-dutycycle-range = <0 100>;
+
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
 	usb_pwr_en: regulator-usb-pwr-en {
 		compatible = "regulator-fixed";
 		regulator-name = "USB_PWR_EN";
@@ -381,6 +398,12 @@
 
 &pwm_AO_cd {
 	pinctrl-0 = <&pwm_ao_d_e_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&pwm_ef {
+	pinctrl-0 = <&pwm_e_pins>;
 	pinctrl-names = "default";
 	status = "okay";
 };
