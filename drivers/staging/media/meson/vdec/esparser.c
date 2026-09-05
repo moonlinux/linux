@@ -277,22 +277,37 @@ esparser_write_data(struct amvdec_core *core, dma_addr_t addr, u32 size)
 
 static u32 esparser_vififo_get_free_space(struct amvdec_session *sess)
 {
-	u32 vififo_usage;
-	struct amvdec_ops *vdec_ops = sess->fmt_out->vdec_ops;
 	struct amvdec_core *core = sess->core;
+	struct amvdec_ops *vdec_ops = sess->fmt_out->vdec_ops;
+	u32 raw_level, fifo_level, hole, usage;
 
-	vififo_usage  = vdec_ops->vififo_level(sess);
-	vififo_usage += amvdec_read_parser(core, PARSER_VIDEO_HOLE);
-	vififo_usage += (6 * SZ_1K); // 6 KiB internal fifo
+	raw_level = vdec_ops->vififo_level(sess);
 
-	if (vififo_usage > sess->vififo_size) {
-		dev_warn(sess->core->dev,
-			 "VIFIFO usage (%u) > VIFIFO size (%u)\n",
-			 vififo_usage, sess->vififo_size);
+	fifo_level = raw_level & GENMASK(23, 0);
+
+	hole = amvdec_read_parser(core, PARSER_VIDEO_HOLE);
+
+	/* Avoid overflow when accounting for the parser hole. */
+	if (fifo_level > U32_MAX - hole)
+		return 0;
+
+	usage = fifo_level + hole;
+
+	/* Avoid overflow when accounting for the internal FIFO reservation. */
+	if (usage > U32_MAX - (6 * SZ_1K))
+		return 0;
+
+	usage += 6 * SZ_1K;
+
+	if (usage >= sess->vififo_size) {
+		dev_dbg_ratelimited(core->dev,
+				    "esparser: VIFIFO full: raw=0x%08x level=%u hole=%u reserved=%u size=%u\n",
+				    raw_level, fifo_level, hole,
+				    6 * SZ_1K, sess->vififo_size);
 		return 0;
 	}
 
-	return sess->vififo_size - vififo_usage;
+	return sess->vififo_size - usage;
 }
 
 int esparser_queue_eos(struct amvdec_core *core, const u8 *data, u32 len)
