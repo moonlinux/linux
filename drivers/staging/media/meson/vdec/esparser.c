@@ -399,15 +399,11 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
 		return -EAGAIN;
 	}
 
-	v4l2_m2m_src_buf_remove_by_buf(sess->m2m_ctx, vbuf);
-
 	offset = esparser_get_offset(sess);
 
 	ret = amvdec_add_ts(sess, vb->timestamp, vbuf->timecode, offset, vbuf->flags);
-	if (ret) {
-		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+	if (ret)
 		return ret;
-	}
 
 	dev_dbg(core->dev, "esparser: ts = %llu pld_size = %u offset = %08X flags = %08X\n",
 		vb->timestamp, payload_size, offset, vbuf->flags);
@@ -418,49 +414,91 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
 
 	if (sess->fmt_out->pixfmt == V4L2_PIX_FMT_VP9) {
 		payload_size = vp9_update_header(core, vb);
-
-		/* If unable to alter buffer to add headers */
-		if (payload_size == 0) {
+		if (payload_size < 0) {
+			dev_err(core->dev, "esparser: VP9 header update failed: %d\n",
+				payload_size);
 			amvdec_remove_ts(sess, vb->timestamp);
-			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
-
-			return 0;
+			return payload_size;
 		}
 	}
 
 	pad_size = esparser_pad_start_code(core, vb, payload_size);
+
 	ret = esparser_write_data(core, phy, payload_size + pad_size);
 
-	if (ret <= 0) {
-		dev_warn(core->dev, "esparser: input parsing error\n");
+	if (ret) {
+		dev_warn(core->dev, "esparser: input parsing error: %d\n", ret);
 		amvdec_remove_ts(sess, vb->timestamp);
-		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
 		amvdec_write_parser(core, PARSER_FETCH_CMD, 0);
-
-		return 0;
+		return ret;
 	}
 
 	atomic_inc(&sess->esparser_queued_bufs);
-	v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
 
 	return 0;
 }
 
 void esparser_queue_all_src(struct work_struct *work)
 {
-	struct v4l2_m2m_buffer *buf, *n;
 	struct amvdec_session *sess =
 		container_of(work, struct amvdec_session, esparser_queue_work);
+	struct amvdec_core *core = sess->core;
+	struct device *dev = core->dev_dec;
 
-	mutex_lock(&sess->lock);
-	v4l2_m2m_for_each_src_buf_safe(sess->m2m_ctx, buf, n) {
-		if (sess->should_stop)
+	while (!sess->should_stop) {
+		struct vb2_v4l2_buffer *vbuf;
+		bool is_last_buf;
+		int ret;
+
+		/* Stop when there are no source buffers to process. */
+		mutex_lock(&sess->lock);
+		vbuf = v4l2_m2m_next_src_buf(sess->m2m_ctx);
+		mutex_unlock(&sess->lock);
+
+		if (!vbuf)
 			break;
 
-		if (esparser_queue(sess, &buf->vb) < 0)
+		is_last_buf = vbuf->flags & V4L2_BUF_FLAG_LAST;
+
+		/*
+		 * Keep the buffer queued when the parser cannot accept it.
+		 */
+		ret = esparser_queue(sess, vbuf);
+
+		/*
+		 * The VIFIFO is full. Keep the buffer queued so it can be
+		 * processed when space becomes available.
+		 */
+		if (ret == -EAGAIN)
 			break;
+
+		/* Remove the processed buffer before completing it. */
+		mutex_lock(&sess->lock);
+		v4l2_m2m_src_buf_remove_by_buf(sess->m2m_ctx, vbuf);
+		mutex_unlock(&sess->lock);
+
+		if (ret) {
+			dev_err_ratelimited(dev,
+					    "esparser: parser error %d, dropping buffer\n",
+					    ret);
+			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+		} else {
+			v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
+		}
+
+		if (is_last_buf)
+			break;
+
+		/* Allow other tasks to run between buffer submissions. */
+		cond_resched();
 	}
-	mutex_unlock(&sess->lock);
+
+	/*
+	 * The M2M job remains active while the parser work is running.
+	 * Complete it only after all currently available source buffers
+	 * have been processed.
+	 */
+	v4l2_m2m_job_finish(sess->core->m2m_dev, sess->m2m_ctx);
 }
 
 int esparser_power_up(struct amvdec_session *sess)
