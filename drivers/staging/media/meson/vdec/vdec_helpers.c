@@ -281,6 +281,8 @@ static void dst_buf_done(struct amvdec_session *sess,
 {
 	struct device *dev = sess->core->dev_dec;
 	u32 output_size = amvdec_get_output_size(sess);
+	bool should_stop = READ_ONCE(sess->should_stop);
+	int queued = atomic_read(&sess->esparser_queued_bufs);
 
 	switch (sess->pixfmt_cap) {
 	case V4L2_PIX_FMT_NV12M:
@@ -298,10 +300,12 @@ static void dst_buf_done(struct amvdec_session *sess,
 	vbuf->sequence = sess->sequence_cap++;
 	vbuf->flags = flags;
 	vbuf->timecode = timecode;
+	vbuf->field = field;
 
-	if (sess->should_stop &&
-	    atomic_read(&sess->esparser_queued_bufs) <= 1) {
-		const struct v4l2_event ev = { .type = V4L2_EVENT_EOS };
+	if (should_stop && queued <= 1) {
+		const struct v4l2_event ev = {
+			.type = V4L2_EVENT_EOS,
+		};
 
 		dev_dbg(dev, "Signaling EOS, sequence_cap = %u\n",
 			sess->sequence_cap - 1);
@@ -311,17 +315,18 @@ static void dst_buf_done(struct amvdec_session *sess,
 		/* Mark LAST for drained show frames during a source change */
 		vbuf->flags |= V4L2_BUF_FLAG_LAST;
 		sess->sequence_cap = 0;
-	} else if (sess->should_stop)
-		dev_dbg(dev, "should_stop, %u bufs remain\n",
-			atomic_read(&sess->esparser_queued_bufs));
+	} else if (should_stop) {
+		dev_dbg(dev, "Stopping: %d queued buffers remain\n", queued);
+	}
 
-	dev_dbg(dev, "Buffer %u done, ts = %llu, flags = %08X\n",
-		vbuf->vb2_buf.index, timestamp, flags);
-	vbuf->field = field;
+	dev_dbg(dev, "Buffer %u done ts=%llu flags=%08x field=%u\n",
+		vbuf->vb2_buf.index, timestamp, vbuf->flags, field);
+
 	v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
 
 	/* Buffer done probably means the vififo got freed */
-	schedule_work(&sess->esparser_queue_work);
+	if (!should_stop)
+		schedule_work(&sess->esparser_queue_work);
 }
 
 void amvdec_dst_buf_done(struct amvdec_session *sess,
