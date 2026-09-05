@@ -504,6 +504,20 @@ int esparser_power_up(struct amvdec_session *sess)
 	return 0;
 }
 
+int esparser_power_down(struct amvdec_session *sess)
+{
+	struct amvdec_core *core = sess->core;
+
+	amvdec_write_parser(core, PARSER_INT_ENABLE, 0);
+	amvdec_write_parser(core, PARSER_CONTROL, 0);
+	amvdec_write_parser(core, PARSER_INT_STATUS, 0xffff);
+	amvdec_write_parser(core, PFIFO_RD_PTR, 0);
+	amvdec_write_parser(core, PFIFO_WR_PTR, 0);
+	reset_control_reset(core->esparser_reset);
+
+	return 0;
+}
+
 int esparser_init(struct platform_device *pdev, struct amvdec_core *core)
 {
 	struct device *dev = &pdev->dev;

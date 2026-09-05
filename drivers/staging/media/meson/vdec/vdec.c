@@ -129,6 +129,7 @@ static void vdec_poweroff(struct amvdec_session *sess)
 
 	sess->should_stop = 1;
 	vdec_wait_inactive(sess);
+	esparser_power_down(sess);
 	if (codec_ops->drain)
 		codec_ops->drain(sess);
 

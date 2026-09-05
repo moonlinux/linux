@@ -13,6 +13,7 @@
 
 int esparser_init(struct platform_device *pdev, struct amvdec_core *core);
 int esparser_power_up(struct amvdec_session *sess);
+int esparser_power_down(struct amvdec_session *sess);
 
 /**
  * esparser_queue_eos() - write End Of Stream sequence to the ESPARSER
