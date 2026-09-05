@@ -424,11 +424,14 @@ static void vdec_free_canvas(struct amvdec_session *sess)
 static void vdec_reset_timestamps(struct amvdec_session *sess)
 {
 	struct amvdec_timestamp *tmp, *n;
+	unsigned long flags;
 
+	spin_lock_irqsave(&sess->ts_spinlock, flags);
 	list_for_each_entry_safe(tmp, n, &sess->timestamps, list) {
 		list_del(&tmp->list);
 		kfree(tmp);
 	}
+	spin_unlock_irqrestore(&sess->ts_spinlock, flags);
 }
 
 static void vdec_reset_bufs_recycle(struct amvdec_session *sess)
