@@ -303,6 +303,8 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 	else
 		sess->streamon_cap = 1;
 
+	v4l2_m2m_update_start_streaming_state(sess->m2m_ctx, q);
+
 	if (!sess->streamon_out)
 		return 0;
 
@@ -416,6 +418,8 @@ err_cleanup_flags:
 
 		sess->streamon_cap = 0;
 	}
+
+	v4l2_m2m_update_stop_streaming_state(sess->m2m_ctx, q);
 
 	return ret;
 }
@@ -565,6 +569,8 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 
 		sess->streamon_cap = 0;
 	}
+
+	v4l2_m2m_update_stop_streaming_state(sess->m2m_ctx, q);
 }
 
 static int vdec_vb2_buf_prepare(struct vb2_buffer *vb)
