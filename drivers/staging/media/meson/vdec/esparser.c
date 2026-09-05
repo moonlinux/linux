@@ -315,17 +315,32 @@ int esparser_queue_eos(struct amvdec_core *core, const u8 *data, u32 len)
 	struct device *dev = core->dev;
 	void *eos_vaddr;
 	dma_addr_t eos_paddr;
+	size_t total_len;
 	int ret;
 
-	eos_vaddr = dma_alloc_coherent(dev, len + SEARCH_PATTERN_LEN,
+	if (!data)
+		return -EINVAL;
+
+	if (len > U32_MAX - SEARCH_PATTERN_LEN) {
+		dev_err_ratelimited(core->dev,
+				    "esparser EOS: data length %u overflows search pattern length\n",
+				    len);
+		return -EOVERFLOW;
+	}
+
+	total_len = len + SEARCH_PATTERN_LEN;
+
+	eos_vaddr = dma_alloc_coherent(dev, total_len,
 				       &eos_paddr, GFP_KERNEL);
 	if (!eos_vaddr)
 		return -ENOMEM;
 
 	memcpy(eos_vaddr, data, len);
+	memset((u8 *)eos_vaddr + len, 0, SEARCH_PATTERN_LEN);
+
 	ret = esparser_write_data(core, eos_paddr, len);
-	dma_free_coherent(dev, len + SEARCH_PATTERN_LEN,
-			  eos_vaddr, eos_paddr);
+
+	dma_free_coherent(dev, total_len, eos_vaddr, eos_paddr);
 
 	return ret;
 }
