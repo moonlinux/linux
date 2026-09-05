@@ -842,14 +842,22 @@ static int codec_vp9_stop(struct amvdec_session *sess)
 	struct amvdec_core *core = sess->core;
 	struct codec_vp9 *vp9 = sess->priv;
 
+	if (!vp9)
+		return 0;
+
 	mutex_lock(&vp9->lock);
+
 	if (vp9->workspace_vaddr)
 		dma_free_coherent(core->dev, SIZE_WORKSPACE,
 				  vp9->workspace_vaddr,
 				  vp9->workspace_paddr);
 
 	codec_hevc_free_fbc_buffers(sess, &vp9->common);
+
 	mutex_unlock(&vp9->lock);
+
+	kfree(vp9);
+	sess->priv = NULL;
 
 	return 0;
 }
