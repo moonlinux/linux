@@ -1278,6 +1278,7 @@ static int vdec_probe(struct platform_device *pdev)
 	core->vdev_dec = vdev;
 	core->dev_dec = dev;
 	mutex_init(&core->lock);
+	init_waitqueue_head(&core->esparser_wq);
 
 	strscpy(vdev->name, "meson-video-decoder", sizeof(vdev->name));
 	vdev->release = video_device_release;

@@ -53,9 +53,6 @@
 #define SEARCH_PATTERN_LEN	512
 #define VP9_HEADER_SIZE		16
 
-static DECLARE_WAIT_QUEUE_HEAD(wq);
-static int search_done;
-
 static irqreturn_t esparser_isr(int irq, void *dev)
 {
 	struct amvdec_core *core = dev;
@@ -74,8 +71,9 @@ static irqreturn_t esparser_isr(int irq, void *dev)
 	if (int_status & PARSER_INTSTAT_SC_FOUND) {
 		amvdec_write_parser(core, PFIFO_RD_PTR, 0);
 		amvdec_write_parser(core, PFIFO_WR_PTR, 0);
-		search_done = 1;
-		wake_up_interruptible(&wq);
+		/* Signal parser completion. */
+		WRITE_ONCE(core->search_done, 1);
+		wake_up_interruptible(&core->esparser_wq);
 	}
 
 	return IRQ_HANDLED;
@@ -222,21 +220,59 @@ static u32 esparser_pad_start_code(struct amvdec_core *core,
 static int
 esparser_write_data(struct amvdec_core *core, dma_addr_t addr, u32 size)
 {
+	u32 parser_ctrl, fetch_cmd;
+	long ret;
+
+	if (size > U32_MAX - SEARCH_PATTERN_LEN)
+		return -EOVERFLOW;
+
+	/*
+	 * Clear the previous operation before starting a new one.
+	 */
+	WRITE_ONCE(core->search_done, 0);
+
 	amvdec_write_parser(core, PFIFO_RD_PTR, 0);
 	amvdec_write_parser(core, PFIFO_WR_PTR, 0);
-	amvdec_write_parser(core, PARSER_CONTROL,
-			    ES_WRITE |
-			    ES_PARSER_START |
-			    ES_SEARCH |
-			    (size << ES_PACK_SIZE_BIT));
 
+	parser_ctrl = ES_WRITE | ES_PARSER_START | ES_SEARCH |
+		(size << ES_PACK_SIZE_BIT);
+
+	fetch_cmd = (7 << FETCH_ENDIAN_BIT) |
+		(size + SEARCH_PATTERN_LEN);
+
+	amvdec_write_parser(core, PARSER_CONTROL, parser_ctrl);
 	amvdec_write_parser(core, PARSER_FETCH_ADDR, addr);
-	amvdec_write_parser(core, PARSER_FETCH_CMD,
-			    (7 << FETCH_ENDIAN_BIT) |
-			    (size + SEARCH_PATTERN_LEN));
 
-	search_done = 0;
-	return wait_event_interruptible_timeout(wq, search_done, (HZ / 5));
+	/*
+	 * Ensure the control/address writes are visible before FETCH_CMD
+	 * starts the operation.
+	 */
+	wmb();
+
+	/*
+	 * FETCH_CMD starts the parser operation.
+	 */
+	amvdec_write_parser(core, PARSER_FETCH_CMD, fetch_cmd);
+
+	ret = wait_event_interruptible_timeout(core->esparser_wq,
+					       READ_ONCE(core->search_done),
+					       HZ / 5);
+
+	if (ret == 0) {
+		dev_err(core->dev, "esparser: Bus Master DMA hardware timeout (%u bytes)\n",
+			size);
+
+		amvdec_write_parser(core, PARSER_FETCH_CMD, 0);
+		amvdec_write_parser(core, PARSER_CONTROL, 0);
+
+		ret = -ETIMEDOUT;
+	} else if (ret == -ERESTARTSYS) {
+		ret = -ERESTARTSYS;
+	} else {
+		ret = 0;
+	}
+
+	return ret;
 }
 
 static u32 esparser_vififo_get_free_space(struct amvdec_session *sess)

@@ -67,6 +67,8 @@ struct amvdec_session;
  * @v4l2_dev: v4l2 device
  * @cur_sess: current decoding session
  * @lock: video device lock
+ * @esparser_wq: Wait queue for ES parser DMA completion
+ * @search_done: Set by the ES parser IRQ when a DMA operation completes
  * @vdec_irq: irq for video decoding
  * @esparser_irq: irq for elementary stream parsing
  */
@@ -95,6 +97,8 @@ struct amvdec_core {
 
 	struct amvdec_session *cur_sess;
 	struct mutex lock;
+	wait_queue_head_t esparser_wq;
+	int search_done;
 	int vdec_irq;
 	int esparser_irq;
 };
