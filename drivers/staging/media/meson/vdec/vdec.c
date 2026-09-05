@@ -1213,6 +1213,9 @@ static void vdec_v4l2_dev_release(struct v4l2_device *v4l2_dev)
 	if (core->m2m_dev)
 		v4l2_m2m_release(core->m2m_dev);
 
+	if (core->canvas)
+		meson_canvas_put(core->dev, core->canvas);
+
 	mutex_destroy(&core->lock);
 	mutex_destroy(&core->esparser_lock);
 	kfree(core);
@@ -1250,8 +1253,11 @@ static int vdec_probe(struct platform_device *pdev)
 	}
 
 	core->canvas = meson_canvas_get(dev);
-	if (IS_ERR(core->canvas))
-		return PTR_ERR(core->canvas);
+	if (IS_ERR(core->canvas)) {
+		ret = PTR_ERR(core->canvas);
+		core->canvas = NULL;
+		goto err_free_core;
+	}
 
 	/* Enforce strict 32-bit DMA limit to match hardware capabilities */
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));

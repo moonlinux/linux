@@ -31,6 +31,14 @@ struct meson_canvas;
 struct meson_canvas *meson_canvas_get(struct device *dev);
 
 /**
+ * meson_canvas_put() - release a canvas provider instance reference
+ *
+ * @dev: consumer device structure pointer
+ * @canvas: canvas provider instance metadata pointer to release
+ */
+void meson_canvas_put(struct device *dev, struct meson_canvas *canvas);
+
+/**
  * meson_canvas_alloc() - take ownership of a canvas
  *
  * @canvas: canvas provider instance retrieved from meson_canvas_get()

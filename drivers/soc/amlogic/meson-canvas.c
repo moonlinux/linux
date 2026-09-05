@@ -54,6 +54,7 @@ struct meson_canvas *meson_canvas_get(struct device *dev)
 	struct device_node *canvas_node;
 	struct platform_device *canvas_pdev;
 	struct meson_canvas *canvas;
+	struct device_link *link;
 
 	canvas_node = of_parse_phandle(dev->of_node, "amlogic,canvas", 0);
 	if (!canvas_node)
@@ -61,22 +62,46 @@ struct meson_canvas *meson_canvas_get(struct device *dev)
 
 	canvas_pdev = of_find_device_by_node(canvas_node);
 	of_node_put(canvas_node);
+
 	if (!canvas_pdev)
 		return ERR_PTR(-EPROBE_DEFER);
 
 	/*
-	 * If priv is NULL, it's probably because the canvas hasn't
-	 * properly initialized. Bail out with -EINVAL because, in the
-	 * current state, this driver probe cannot return -EPROBE_DEFER
+	 * Establish the consumer/supplier relationship before accessing
+	 * the supplier's driver data.
 	 */
-	canvas = dev_get_drvdata(&canvas_pdev->dev);
-	put_device(&canvas_pdev->dev);
-	if (!canvas)
+	link = device_link_add(dev, &canvas_pdev->dev, DL_FLAG_STATELESS |
+			       DL_FLAG_PM_RUNTIME);
+	if (!link) {
+		put_device(&canvas_pdev->dev);
 		return ERR_PTR(-EINVAL);
+	}
+
+	canvas = dev_get_drvdata(&canvas_pdev->dev);
+	if (!canvas) {
+		device_link_remove(dev, &canvas_pdev->dev);
+		put_device(&canvas_pdev->dev);
+		return ERR_PTR(-EPROBE_DEFER);
+	}
 
 	return canvas;
 }
 EXPORT_SYMBOL_GPL(meson_canvas_get);
+
+void meson_canvas_put(struct device *dev, struct meson_canvas *canvas)
+{
+	struct platform_device *canvas_pdev;
+
+	if (IS_ERR_OR_NULL(canvas))
+		return;
+
+	canvas_pdev = to_platform_device(canvas->dev);
+
+	device_link_remove(dev, &canvas_pdev->dev);
+
+	put_device(&canvas_pdev->dev);
+}
+EXPORT_SYMBOL_GPL(meson_canvas_put);
 
 int meson_canvas_config(struct meson_canvas *canvas, u8 canvas_index,
 			u32 addr, u32 stride, u32 height,
