@@ -370,43 +370,73 @@ void amvdec_dst_buf_done_offset(struct amvdec_session *sess,
 	struct device *dev = sess->core->dev_dec;
 	struct amvdec_timestamp *match = NULL;
 	struct amvdec_timestamp *tmp, *n;
+	struct amvdec_timestamp *stale_to_free = NULL;
 	struct v4l2_timecode timecode = { 0 };
 	u64 timestamp = 0;
 	u32 vbuf_flags = 0;
+	u32 best_diff = U32_MAX;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sess->ts_spinlock, flags);
 
-	/* Look for our vififo offset to get the corresponding timestamp. */
 	list_for_each_entry_safe(tmp, n, &sess->timestamps, list) {
-		if (tmp->offset > offset) {
-			/*
-			 * Delete any record that remained unused for 32 match
-			 * checks
-			 */
+		if (tmp->offset == offset) {
 			if (tmp->used_count++ >= 32) {
 				list_del(&tmp->list);
-				kfree(tmp);
+				stale_to_free = tmp;
+				continue;
 			}
+
+			match = tmp;
 			break;
 		}
-
-		match = tmp;
 	}
 
+	/*
+	 * Hardware/parser offsets can occasionally differ slightly.
+	 * Select the closest timestamp only when it is within the
+	 * tolerated range.
+	 */
 	if (!match) {
-		dev_err(dev, "Buffer %u done but can't match offset (%08X)\n",
-			vbuf->vb2_buf.index, offset);
-	} else {
+		list_for_each_entry(tmp, &sess->timestamps, list) {
+			u32 diff = (tmp->offset > offset) ?
+				tmp->offset - offset :
+				offset - tmp->offset;
+
+			if (diff < best_diff) {
+				best_diff = diff;
+				match = tmp;
+			}
+		}
+
+		if (match && best_diff >= 4096)
+			match = NULL;
+
+		if (match)
+			dev_dbg(dev,
+				"Recovered timestamp: expected %08x got %08x diff %u\n",
+				match->offset, offset, best_diff);
+	}
+
+	if (match) {
 		timestamp = match->ts;
 		timecode = match->tc;
 		vbuf_flags = match->flags;
+
 		list_del(&match->list);
-		kfree(match);
+	} else {
+		dev_warn_ratelimited(dev,
+				     "No timestamp match for offset %08x\n",
+				     offset);
 	}
+
 	spin_unlock_irqrestore(&sess->ts_spinlock, flags);
 
+	kfree(match);
+	kfree(stale_to_free);
+
 	dst_buf_done(sess, vbuf, field, timestamp, timecode, vbuf_flags);
+
 	if (match)
 		atomic_dec(&sess->esparser_queued_bufs);
 }
